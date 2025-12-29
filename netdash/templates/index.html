@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/static/netdash-logo.svg" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="loadingOverlay">
+    <div class="loadingBox">
+      <div class="spinner"></div>
+      <div class="loading-text">
+        <div id="loadingMsg" class="loading-msg">Initializing discovery...</div>
+        <div id="loadingSub" class="loading-sub">Warming up packet hamsters…</div>
+      </div>
+    </div>
+  </div>
+  <div id="tooltip" class="tooltip"></div>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <div class="brandRow">
+          <img src="/static/netdash-logo.svg" alt="NetDash logo" class="logoImg" />
+          <div>
+            <h1 class="brandTitle">NetDash</h1>
+            <div class="cardSub">Home Network Dashboard</div>
+          </div>
+        </div>
+        <div class="subline">
+          <div class="pill">
+            <span class="dot" id="dotHost"></span>
+            <span id="hostLine">Loading…</span>
+          </div>
+          <div class="pill">
+            <span class="dot" id="dotTime"></span>
+            <span id="lastUpdated">Loading…</span>
+          </div>
+          <div class="pill" id="cachePill" style="display:flex;">
+            <span class="dot" id="dotCache"></span>
+            <span id="cacheMeta">Cache: —</span>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="btnRefresh">Refresh now</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card span12 lined">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">Overview</p>
+            <p class="cardSub">Quick health snapshot</p>
+          </div>
+        </div>
+        <div class="statRow">
+          <div class="chipStat" id="statKnown">Known: —</div>
+          <div class="chipStat" id="statKnownUp">Known up: —</div>
+          <div class="chipStat" id="statDisc">Discovered: —</div>
+          <div class="chipStat" id="statDiscUp">Discovered up: —</div>
+          <div class="chipStat" id="statDuration">Last sweep: —</div>
+          <div class="chipStat" id="statNeighbor">Neighbors: —</div>
+          <a class="chipStat" id="statDownload" href="/api/status" style="text-decoration:none; color:inherit;" download="status.json">Download JSON</a>
+        </div>
+      </div>
+
+      <div class="card span12" id="graphCard">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">Network Visualization</p>
+            <p class="cardSub">Live graphical view of discovered entities</p>
+          </div>
+          <div class="actions">
+            <div class="btn" id="btnResetView">Reset view</div>
+          </div>
+        </div>
+        <div id="netGraph"></div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">NextDNS</p>
+            <p class="cardSub">Detection via test endpoint</p>
+          </div>
+          <div id="nextdnsUsing" class="badge">—</div>
+        </div>
+        <div class="row"><div class="k">Status</div><div class="v"><span id="nextdnsStatus" class="badge">—</span></div></div>
+        <div class="row"><div class="k">Details</div><div class="v muted" id="nextdnsDetails">—</div></div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">Tailscale</p>
+            <p class="cardSub">Local state and tailnet devices</p>
+          </div>
+          <div id="tsRunning" class="badge">—</div>
+        </div>
+        <div class="row"><div class="k">Installed</div><div class="v"><span id="tsInstalled" class="badge">—</span></div></div>
+        <div class="row"><div class="k">Backend</div><div class="v muted mono" id="tsBackend">—</div></div>
+        <div class="row"><div class="k">CLI details</div><div class="v muted" id="tsDetails">—</div></div>
+        <div class="row"><div class="k">Current exit node</div><div class="v" id="tsExitNode">—</div></div>
+
+        <div style="margin-top: 10px;">
+          <div class="cardSub">Tailnet devices (filtered)</div>
+          <div class="list" id="tsPeers">—</div>
+        </div>
+      </div>
+
+      <div class="card span12">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">Known devices</p>
+            <p class="cardSub">Matched by IP and/or MAC; checked by ping and service probes</p>
+          </div>
+          <div class="badge muted" id="knownCount">—</div>
+        </div>
+        <div id="knownDevices"></div>
+      </div>
+
+      <div class="card span12">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle">Discovered devices</p>
+            <p class="cardSub">Neighbor cache + bounded subnet sweep</p>
+          </div>
+          <div class="badge muted" id="discMeta">—</div>
+        </div>
+        <div id="discStats" class="muted" style="font-size:11px; margin:4px 0 0 0;">—</div>
+        <div id="discLastRun" class="muted" style="font-size:11px; margin:2px 0 8px 0;">Last run: —</div>
+        <div id="discoveredDevices"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

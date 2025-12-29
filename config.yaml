@@ -1,0 +1,60 @@
+dashboard:
+  listen_host: "0.0.0.0"
+  listen_port: 8080
+  refresh_seconds: 5
+
+discovery:
+  mode: "bounded_sweep"
+  max_sweep_hosts: 256
+  ping_timeout_ms: 900
+  default_ports: [22, 80, 443, 3389]
+
+nextdns:
+  test_url: "https://test.nextdns.io"
+
+tailscale:
+  exe: "tailscale"
+
+devices:
+  - name: "Grandstream VoIP Phone"
+    match:
+      ip: "10.0.0.57"
+      mac: "00:0B:82:FB:82:80"
+    ports: [80, 443, 5060, 8089]
+    notes: "Web UI at http://10.0.0.57/"
+
+  - name: "Windows Desktop (LAN)"
+    match:
+      ip: "10.0.0.110"
+    ports: [3389, 5985, 5986]
+    notes: "LAN: RDP 3389; WinRM 5985/5986 if enabled"
+
+  - name: "Windows Desktop (Tailscale)"
+    match:
+      ip: "100.118.233.49"
+    ports: [3389, 5985, 5986]
+    notes: "Tailnet: Tailscale IP 100.118.233.49"
+
+  - name: "Home Lab (Linux)"
+    match:
+      ip: ""
+    ports: [22, 80, 443]
+    notes: "Set IP after install; recommend DHCP reservation"
+
+  - name: "MacBook Pro (Wi-Fi)"
+    match:
+      mac: "72:04:F0:2E:70:6C"
+    ports: [22]
+    notes: "If Remote Login (SSH) enabled, port 22 will show open"
+
+  - name: "MacBook Pro (Other NIC)"
+    match:
+      mac: "00:E0:4C:59:60:00"
+    ports: [22]
+    notes: "Second MAC provided; useful if active interface changes"
+
+  - name: "MacBook Pro (Tailscale)"
+    match:
+      ip: "100.83.24.35"
+    ports: [22]
+    notes: "Tailscale IP; useful when away from home network"
