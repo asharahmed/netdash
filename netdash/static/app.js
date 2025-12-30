@@ -1,6 +1,6 @@
 import { fetchStatus } from "./api.js";
 import { initGraph, setGraphData, resetGraphView } from "./visualization.js";
-import { setBadge, deviceTable, peerRow, copyText } from "./ui.js";
+import { setBadge, deviceTable, sortDevices, peerRow, copyText } from "./ui.js";
 
 const loadingMessages = [
   "Rerouting the packet stream...",
@@ -37,6 +37,14 @@ const loadingSubMessages = [
 let loadingInterval = null;
 let firstLoad = true;
 let lastGoodTs = null;
+let lastKnownDevices = [];
+let lastDiscoveredDevices = [];
+let lastGatewayIp = null;
+let lastShowTsIndicator = false;
+let knownSortKey = 'name';
+let knownSortDir = 'asc';
+let discSortKey = 'name';
+let discSortDir = 'asc';
 
 function toggleLoading(show) {
   const overlay = document.getElementById('loadingOverlay');
@@ -159,11 +167,14 @@ async function refresh(options = {}) {
     const knownUp = known.filter(d => d.up).length;
     const discUp = discovered.filter(d => d.up).length;
 
+    // Store for filtering
+    lastKnownDevices = known;
+    lastDiscoveredDevices = discovered;
+    lastShowTsIndicator = ts.installed === true || ts.running_local === true;
+    lastGatewayIp = dMeta.gateway_ip || null;
+
     document.getElementById('knownCount').textContent = `${known.length} tracked`;
-    const showTsIndicator = ts.installed === true || ts.running_local === true;
-    const gatewayIp = dMeta.gateway_ip || null;
-    document.getElementById('knownDevices').innerHTML = deviceTable(known, { showTailscale: showTsIndicator, gatewayIp });
-    document.getElementById('discoveredDevices').innerHTML = deviceTable(discovered, { gatewayIp });
+    applyFilters(); // Render with current filters
 
     document.getElementById('statKnown').textContent = `Known: ${known.length}`;
     document.getElementById('statKnownUp').textContent = `Known up: ${knownUp}`;
@@ -188,11 +199,116 @@ async function refresh(options = {}) {
 
 window.copyText = copyText;
 
+function applyFilters() {
+  const searchTerm = (document.getElementById('deviceSearch')?.value || '').toLowerCase();
+  const showOffline = document.getElementById('filterShowOffline')?.checked !== false;
+  const showMissing = document.getElementById('filterShowMissing')?.checked !== false;
+
+  const filterDevice = (d) => {
+    // Filter by search term
+    if (searchTerm) {
+      const name = (d.name || '').toLowerCase();
+      const mac = (d.mac || '').toLowerCase();
+      const ips = (d.interfaces || []).map(i => i.ip || '').join(' ').toLowerCase();
+      if (!name.includes(searchTerm) && !mac.includes(searchTerm) && !ips.includes(searchTerm)) {
+        return false;
+      }
+    }
+    // Filter by status
+    if (!showOffline && !d.up) return false;
+    if (!showMissing && d.missing) return false;
+    return true;
+  };
+
+  let filteredKnown = lastKnownDevices.filter(filterDevice);
+  let filteredDiscovered = lastDiscoveredDevices.filter(filterDevice);
+
+  // Apply sorting
+  filteredKnown = sortDevices(filteredKnown, knownSortKey, knownSortDir);
+  filteredDiscovered = sortDevices(filteredDiscovered, discSortKey, discSortDir);
+
+  document.getElementById('knownDevices').innerHTML = deviceTable(filteredKnown, {
+    showTailscale: lastShowTsIndicator,
+    gatewayIp: lastGatewayIp,
+    tableId: 'knownTable',
+    sortKey: knownSortKey,
+    sortDir: knownSortDir
+  });
+  document.getElementById('discoveredDevices').innerHTML = deviceTable(filteredDiscovered, {
+    gatewayIp: lastGatewayIp,
+    tableId: 'discTable',
+    sortKey: discSortKey,
+    sortDir: discSortDir
+  });
+
+  // Add click handlers for sorting
+  document.querySelectorAll('#knownTable th[data-sort]').forEach(th => {
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      if (knownSortKey === key) {
+        knownSortDir = knownSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        knownSortKey = key;
+        knownSortDir = 'asc';
+      }
+      applyFilters();
+    };
+  });
+  document.querySelectorAll('#discTable th[data-sort]').forEach(th => {
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      if (discSortKey === key) {
+        discSortDir = discSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        discSortKey = key;
+        discSortDir = 'asc';
+      }
+      applyFilters();
+    };
+  });
+
+  // Update counts to show filtered
+  const knownEl = document.getElementById('knownCount');
+  if (filteredKnown.length !== lastKnownDevices.length) {
+    knownEl.textContent = `${filteredKnown.length}/${lastKnownDevices.length} shown`;
+  } else {
+    knownEl.textContent = `${lastKnownDevices.length} tracked`;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initGraph('netGraph', document.getElementById('tooltip'));
   document.getElementById('btnRefresh').addEventListener('click', () => refresh());
   document.getElementById('btnForceRefresh').addEventListener('click', () => refresh({ force: true }));
   document.getElementById('btnResetView').addEventListener('click', () => resetGraphView());
+
+  // Filter event listeners
+  document.getElementById('deviceSearch')?.addEventListener('input', applyFilters);
+  document.getElementById('filterShowOffline')?.addEventListener('change', applyFilters);
+  document.getElementById('filterShowMissing')?.addEventListener('change', applyFilters);
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    // Ctrl+R or Cmd+R for refresh (prevent browser refresh)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
+      e.preventDefault();
+      refresh({ force: e.shiftKey }); // Shift+Ctrl+R for force refresh
+    }
+    // Escape to clear search
+    if (e.key === 'Escape') {
+      const search = document.getElementById('deviceSearch');
+      if (search && search.value) {
+        search.value = '';
+        applyFilters();
+      }
+    }
+    // / to focus search
+    if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+      e.preventDefault();
+      document.getElementById('deviceSearch')?.focus();
+    }
+  });
+
   refresh();
   setInterval(refresh, 30000);
 });

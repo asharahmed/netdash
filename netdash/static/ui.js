@@ -98,12 +98,21 @@ export function deviceTable(devs, options = {}) {
   }).filter(Boolean).join("");
   if (!rows) return `<div class="muted">None</div>`;
 
+  const tableId = options.tableId || 'deviceTable';
+  const sortKey = options.sortKey || 'name';
+  const sortDir = options.sortDir || 'asc';
+  const sortIndicator = (key) => {
+    if (sortKey !== key) return '';
+    return sortDir === 'asc' ? ' ▲' : ' ▼';
+  };
+  const headerStyle = 'cursor: pointer; user-select: none;';
+
   return `
-    <table class="table">
+    <table class="table" id="${tableId}">
       <thead>
         <tr>
-          <th style="width:35%;">Device</th>
-          <th style="width:10%;">Status</th>
+          <th style="width:35%; ${headerStyle}" data-sort="name">Device${sortIndicator('name')}</th>
+          <th style="width:10%; ${headerStyle}" data-sort="status">Status${sortIndicator('status')}</th>
           <th style="width:15%;">Interface / Ping</th>
           <th>Ports</th>
         </tr>
@@ -111,6 +120,26 @@ export function deviceTable(devs, options = {}) {
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+export function sortDevices(devices, sortKey, sortDir) {
+  return [...devices].sort((a, b) => {
+    let aVal, bVal;
+    if (sortKey === 'name') {
+      aVal = (a.name || '').toLowerCase();
+      bVal = (b.name || '').toLowerCase();
+    } else if (sortKey === 'status') {
+      // Sort by up status (up first), then by missing
+      aVal = a.up ? 0 : (a.missing ? 2 : 1);
+      bVal = b.up ? 0 : (b.missing ? 2 : 1);
+    } else {
+      aVal = a[sortKey];
+      bVal = b[sortKey];
+    }
+    if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
 }
 
 export function peerRow(p) {
