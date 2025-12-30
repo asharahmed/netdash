@@ -157,15 +157,24 @@ export function peerRow(p) {
   `;
 }
 
+let copyTooltipTimeout = null;
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 export async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
     const tooltip = document.getElementById('tooltip');
-    tooltip.innerHTML = `<strong>Copied:</strong> ${text}`;
+    tooltip.innerHTML = `<strong>Copied:</strong> ${escapeHtml(text)}`;
     tooltip.style.display = 'block';
     tooltip.style.left = (window.innerWidth - 180) + 'px';
     tooltip.style.top = '10px';
-    setTimeout(() => { tooltip.style.display = 'none'; }, 1200);
+    if (copyTooltipTimeout) clearTimeout(copyTooltipTimeout);
+    copyTooltipTimeout = setTimeout(() => { tooltip.style.display = 'none'; }, 1200);
   } catch (e) {
     console.error("Copy failed", e);
   }

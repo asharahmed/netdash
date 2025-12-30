@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Dict
@@ -45,9 +46,15 @@ async def api_status(request: Request) -> JSONResponse:
 
     disc_result = {}
     discovery_stale = False
+    discovery_timeout = False
     if not light:
         if force_refresh:
-            disc_result = await discover(cfg, force_refresh=True)
+            try:
+                disc_result = await asyncio.wait_for(discover(cfg, force_refresh=True), timeout=45.0)
+            except asyncio.TimeoutError:
+                print("Warning: Discovery timed out after 45s")
+                discovery_timeout = True
+                disc_result = get_cached_discovery() or {}
         else:
             disc_result = get_cached_discovery()
             discovery_stale = not is_discovery_rate_limited(30)
@@ -62,8 +69,8 @@ async def api_status(request: Request) -> JSONResponse:
                     "meta": {"completed_at": 0},
                 }
 
-    results = await __import__("asyncio").gather(
-        __import__("asyncio").to_thread(nextdns_status, test_url),
+    results = await asyncio.gather(
+        asyncio.to_thread(nextdns_status, test_url),
         tailscale_status(ts_exe),
     )
 
@@ -76,7 +83,7 @@ async def api_status(request: Request) -> JSONResponse:
             "cache_enabled": not cache_disabled(),
             "neighbor_snapshot_enabled": not neighbor_snapshot_disabled(),
             "cache_forced": force_refresh,
-            "discovery_timeout": disc_result.get("meta", {}).get("error") == "timeout",
+            "discovery_timeout": discovery_timeout or disc_result.get("meta", {}).get("error") == "timeout",
             "discovery_stale": discovery_stale,
             "light": light,
             "config_warnings": get_config_warnings() or None,

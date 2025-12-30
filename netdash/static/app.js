@@ -45,6 +45,8 @@ let knownSortKey = 'name';
 let knownSortDir = 'asc';
 let discSortKey = 'name';
 let discSortDir = 'asc';
+let searchDebounceTimeout = null;
+let tooltipTimeout = null;
 
 function toggleLoading(show) {
   const overlay = document.getElementById('loadingOverlay');
@@ -186,11 +188,15 @@ async function refresh(options = {}) {
   } catch (err) {
     console.error("Refresh failed:", err);
     const tooltip = document.getElementById('tooltip');
-    tooltip.innerHTML = `<strong>Refresh failed:</strong> ${err.message}`;
+    const isTimeout = err.message.includes("timed out");
+    const isNetwork = err.message.includes("fetch") || err.name === "TypeError";
+    const errorType = isTimeout ? "Timeout" : isNetwork ? "Network Error" : "Error";
+    tooltip.innerHTML = `<strong>${errorType}:</strong> ${err.message}`;
     tooltip.style.display = 'block';
-    tooltip.style.left = (window.innerWidth - 240) + 'px';
+    tooltip.style.left = (window.innerWidth - 280) + 'px';
     tooltip.style.top = '10px';
-    setTimeout(() => { tooltip.style.display = 'none'; }, 2000);
+    if (tooltipTimeout) clearTimeout(tooltipTimeout);
+    tooltipTimeout = setTimeout(() => { tooltip.style.display = 'none'; }, 3000);
   } finally {
     firstLoad = false;
     if (showLoading) toggleLoading(false);
@@ -282,8 +288,11 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById('btnForceRefresh').addEventListener('click', () => refresh({ force: true }));
   document.getElementById('btnResetView').addEventListener('click', () => resetGraphView());
 
-  // Filter event listeners
-  document.getElementById('deviceSearch')?.addEventListener('input', applyFilters);
+  // Filter event listeners (with debounce for search)
+  document.getElementById('deviceSearch')?.addEventListener('input', () => {
+    if (searchDebounceTimeout) clearTimeout(searchDebounceTimeout);
+    searchDebounceTimeout = setTimeout(applyFilters, 150);
+  });
   document.getElementById('filterShowOffline')?.addEventListener('change', applyFilters);
   document.getElementById('filterShowMissing')?.addEventListener('change', applyFilters);
 

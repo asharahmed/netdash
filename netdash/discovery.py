@@ -35,8 +35,8 @@ def load_host_addrs() -> Dict[str, Any]:
                     ips.add(addr.address)
                 elif addr.family == psutil.AF_LINK:
                     macs.append(addr.address)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: Failed to load host addresses: {e}")
     ips.add("127.0.0.1")
     try:
         ips.add(socket.gethostbyname(socket.gethostname()))
@@ -262,8 +262,8 @@ def _network_fingerprint() -> str:
                         continue
                     mask = addr.netmask or ""
                     addrs.append(f"{iface}:{addr.address}/{mask}")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: Failed to get network fingerprint data: {e}")
     gateway_ip = _default_gateway_ip() or ""
     gateway_mac = _gateway_mac(gateway_ip) or ""
     wifi_id = _wifi_identity() or ""
@@ -303,8 +303,8 @@ def _active_host_ips() -> List[str]:
                 if ip.startswith("127.") or ip.startswith("100."):
                     continue
                 out.append(ip)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: Failed to get active host IPs: {e}")
     return out
 
 
@@ -410,8 +410,10 @@ async def get_neighbors_windows() -> List[Dict[str, str]]:
                 state = (row.get("State") or "").strip()
                 if ip and mac and mac != "00-00-00-00-00-00":
                     neighbors.append({"ip": ip, "mac": normalize_mac(mac), "state": state})
-        except Exception:
-            pass
+        except json.JSONDecodeError as e:
+            print(f"Warning: Failed to parse Windows neighbor JSON: {e}")
+        except Exception as e:
+            print(f"Warning: Error processing Windows neighbors: {e}")
 
     if neighbors:
         return list({n["ip"]: n for n in neighbors}.values())
