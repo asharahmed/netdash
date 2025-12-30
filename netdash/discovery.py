@@ -519,6 +519,8 @@ def get_cached_discovery() -> Dict[str, Any]:
 
 def build_known_stub(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     known = parse_known_devices(cfg)
+    host_addrs = load_host_addrs()
+    host_ips_all = host_addrs["ips"]
     combined: Dict[str, Dict[str, Any]] = {}
     for kd in known:
         bn = _base_name(kd.name)
@@ -543,13 +545,19 @@ def build_known_stub(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
             iface_type = "Tailscale" if kd.match_ip.startswith("100.") else "Local"
             if iface_type == "Tailscale":
                 entry["has_tailscale"] = True
+            # If this IP belongs to the host, mark it as up (host can always reach its own IPs)
+            is_host_ip = kd.match_ip in host_ips_all
+            if is_host_ip:
+                entry["up"] = True
+                entry["missing"] = False
+                entry["is_host"] = True
             entry["interfaces"].append(
                 {
                     "ip": kd.match_ip,
                     "mac": entry["mac"],
-                    "ping": False,
+                    "ping": is_host_ip,
                     "ports": {p: False for p in kd.ports},
-                    "up": False,
+                    "up": is_host_ip,
                     "type": iface_type,
                     "original_name": kd.name,
                     "conn_type": "Wired",
@@ -1029,19 +1037,47 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False, fast: bool 
                 iface_type = "Tailscale" if kd.match_ip.startswith("100.") else "Local"
                 if iface_type == "Tailscale":
                     combined[bn]["has_tailscale"] = True
+                # If this IP belongs to the host, mark it as up (host can always reach its own IPs)
+                is_host_ip = kd.match_ip in host_ips_all
+                if is_host_ip:
+                    combined[bn]["up"] = True
+                    combined[bn]["missing"] = False
                 combined[bn]["interfaces"].append(
                     {
                         "ip": kd.match_ip,
                         "mac": mac,
-                        "ping": False,
+                        "ping": is_host_ip,
                         "ports": {p: False for p in kd.ports},
-                        "up": False,
+                        "up": is_host_ip,
                         "type": iface_type,
                         "original_name": kd.name,
                     }
                 )
 
         host_group_name = next((bn for bn, g in combined.items() if g.get("is_host")), "Host machine")
+
+        # Check ports for host IP interfaces (they weren't in candidate_ips so weren't checked)
+        async def check_host_iface_ports(iface: Dict[str, Any], ports: List[int]):
+            if not ports:
+                return
+            port_status = await check_ports(iface["ip"], ports, sem=port_sem)
+            iface["ports"] = port_status
+            if any(port_status.values()):
+                iface["up"] = True
+
+        host_port_tasks = []
+        for grp in combined.values():
+            if not grp.get("is_host"):
+                continue
+            for iface in grp.get("interfaces", []):
+                ip = iface.get("ip", "")
+                if ip in host_ips_all:
+                    ports_to_check = [p for p in iface.get("ports", {}).keys()]
+                    if ports_to_check:
+                        host_port_tasks.append(check_host_iface_ports(iface, ports_to_check))
+
+        if host_port_tasks:
+            await asyncio.gather(*host_port_tasks)
 
         for dev in discovered.values():
             mac = normalize_mac(dev.get("mac")) if dev.get("mac") else None
