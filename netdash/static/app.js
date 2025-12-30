@@ -143,7 +143,8 @@ async function refresh(options = {}) {
     const discUp = discovered.filter(d => d.up).length;
 
     document.getElementById('knownCount').textContent = `${known.length} tracked`;
-    document.getElementById('knownDevices').innerHTML = deviceTable(known);
+    const showTsIndicator = ts.installed === true || ts.running_local === true;
+    document.getElementById('knownDevices').innerHTML = deviceTable(known, { showTailscale: showTsIndicator });
     document.getElementById('discoveredDevices').innerHTML = deviceTable(discovered);
 
     document.getElementById('statKnown').textContent = `Known: ${known.length}`;

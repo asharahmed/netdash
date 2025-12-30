@@ -61,9 +61,25 @@ def parse_known_devices(cfg: Dict[str, Any]) -> List[KnownDevice]:
     return out
 
 
-def local_ipv4_networks() -> List[ipaddress.IPv4Network]:
+def _is_tunnel_iface(name: str) -> bool:
+    name_l = (name or "").lower()
+    if not name_l:
+        return False
+    tunnel_prefixes = ("utun", "tun", "tap", "wg", "tailscale", "ts", "vpn", "ppp")
+    link_prefixes = ("awdl", "llw", "p2p", "bridge")
+    return name_l.startswith(tunnel_prefixes) or name_l.startswith(link_prefixes)
+
+
+def local_ipv4_networks(active_only: bool = False, exclude_tunnel: bool = False) -> List[ipaddress.IPv4Network]:
     nets: List[ipaddress.IPv4Network] = []
-    for _iface, addrs in psutil.net_if_addrs().items():
+    iface_stats = psutil.net_if_stats() if active_only else {}
+    for iface, addrs in psutil.net_if_addrs().items():
+        if active_only:
+            stats = iface_stats.get(iface)
+            if not stats or not stats.isup:
+                continue
+        if exclude_tunnel and _is_tunnel_iface(iface):
+            continue
         for a in addrs:
             if a.family == socket.AF_INET and a.address:
                 ip = ipaddress.IPv4Address(a.address)
@@ -176,10 +192,16 @@ def _wifi_identity() -> Optional[str]:
 
 
 def _network_fingerprint() -> str:
-    nets = sorted(str(n) for n in local_ipv4_networks())
+    nets = sorted(str(n) for n in local_ipv4_networks(active_only=True, exclude_tunnel=True))
     addrs: List[str] = []
     try:
+        iface_stats = psutil.net_if_stats()
         for iface, addrs_list in psutil.net_if_addrs().items():
+            stats = iface_stats.get(iface)
+            if not stats or not stats.isup:
+                continue
+            if _is_tunnel_iface(iface):
+                continue
             for addr in addrs_list:
                 if addr.family == socket.AF_INET and addr.address:
                     if addr.address.startswith("127."):
@@ -410,9 +432,14 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
         default_ports = list(disc_cfg.get("default_ports", [22, 80, 443, 3389]))
 
         known = parse_known_devices(cfg)
-        networks = local_ipv4_networks()
+        networks = local_ipv4_networks(active_only=True, exclude_tunnel=True)
+        known_ips = {kd.match_ip for kd in known if kd.match_ip}
+        gateway_ip = _default_gateway_ip()
+        if gateway_ip:
+            await ping(gateway_ip, min(ping_timeout_ms, 400))
 
         neighbors = await get_neighbors()
+        system = platform.system().lower()
         snapshot_allowed = not neighbor_snapshot_disabled() and not force_refresh
         neighbor_source = "fresh"
         if neighbors:
@@ -458,6 +485,33 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
             elif not neighbors:
                 print("Neighbor scan returned empty" + (" and snapshot reuse disabled" if not snapshot_allowed else " and no snapshot available"))
                 neighbor_source = "empty"
+        if neighbors:
+            validate_pool = []
+            for n in neighbors:
+                ip = n.get("ip")
+                if not ip or not _is_valid_host_ip(ip) or ip in known_ips:
+                    continue
+                validate_pool.append(ip)
+            validate_pool = validate_pool[:8]
+            if validate_pool:
+                validate_sem = asyncio.Semaphore(8)
+                ping_ok: Dict[str, bool] = {}
+
+                async def validate_neighbor(ip: str):
+                    async with validate_sem:
+                        ping_ok[ip] = await ping(ip, min(ping_timeout_ms, 600))
+
+                await asyncio.gather(*[validate_neighbor(ip) for ip in validate_pool])
+                before = len(neighbors)
+                neighbors = [
+                    n
+                    for n in neighbors
+                    if n.get("ip") not in ping_ok or ping_ok.get(n.get("ip"), True)
+                ]
+                dropped = before - len(neighbors)
+                if dropped:
+                    print(f"Dropped {dropped} stale neighbor entries after validation")
+
         candidate_ips = set()
         mac_by_ip: Dict[str, str] = {}
         iface_by_ip: Dict[str, str] = {}
@@ -468,6 +522,10 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
             mac = n.get("mac")
             iface = n.get("iface")
             state = n.get("state", "").upper()
+            if "windows" not in system and not mac:
+                continue
+            if iface and _is_tunnel_iface(iface):
+                continue
             if state not in ("FAILED", "INCOMPLETE"):
                 candidate_ips.add(ip)
             if mac:
@@ -475,11 +533,18 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
             if iface:
                 iface_by_ip[ip] = iface
 
-        networks = local_ipv4_networks()
+        networks = local_ipv4_networks(active_only=True, exclude_tunnel=True)
 
         sweep_ips: List[str] = []
         if mode == "bounded_sweep" and networks:
-            net = sorted(networks, key=lambda n: n.num_addresses)[0]
+            net = None
+            if gateway_ip:
+                for n in networks:
+                    if ipaddress.ip_address(gateway_ip) in n:
+                        net = n
+                        break
+            if net is None:
+                net = sorted(networks, key=lambda n: n.num_addresses)[0]
             count = 0
             for host in net.hosts():
                 h_str = str(host)
@@ -492,6 +557,7 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
         ping_results: Dict[str, bool] = {}
         ping_concurrency = concurrency_from_env("NETDASH_PING_CONCURRENCY", 96)
         ping_hits = 0
+        pre_sweep_count = len(candidate_ips)
         if sweep_ips:
             sem = asyncio.Semaphore(ping_concurrency)
 
@@ -506,7 +572,8 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
 
             print(f"Starting sweep of {len(sweep_ips)} IPs...")
             await asyncio.gather(*[ping_one(ip) for ip in sweep_ips])
-            print(f"Sweep complete. Found {len(candidate_ips) - len(neighbors)} new active IPs.")
+            new_active = max(0, len(candidate_ips) - pre_sweep_count)
+            print(f"Sweep complete. Found {new_active} new active IPs.")
         elif not networks:
             print("No local networks detected; skipping sweep.")
 
@@ -516,12 +583,16 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                 ip = n.get("ip")
                 if not ip or not _is_valid_host_ip(ip):
                     continue
+                mac = n.get("mac")
+                if "windows" not in system and not mac:
+                    continue
                 state = (n.get("state", "") or "").upper()
                 if state in ("FAILED", "INCOMPLETE"):
                     continue
                 candidate_ips.add(ip)
-                mac = n.get("mac")
                 iface = n.get("iface")
+                if iface and _is_tunnel_iface(iface):
+                    continue
                 if mac:
                     mac_by_ip[ip] = mac
                 if iface:
@@ -619,7 +690,9 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
 
         def get_base_name(name: str) -> str:
             name = re.sub(r"\.(local|lan|home|directory|tail[a-f0-9]{5}\.ts\.net)$", "", name, flags=re.I)
-            name = re.sub(r"\s*[\(\[].*?[\)\]]", "", name).strip()
+            name = re.sub(r"\s*[\(\[].*?[\)\]]", "", name)
+            name = re.sub(r"[\s\-–—]*\b(tailscale|ts)\b[\s\-–—]*", " ", name, flags=re.I)
+            name = re.sub(r"\s{2,}", " ", name).strip()
             return name
 
         combined: Dict[str, Dict[str, Any]] = {}
@@ -639,6 +712,7 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                     "up": False,
                     "missing": True,
                     "is_host": False,
+                    "has_tailscale": False,
                 }
 
             mac = normalize_mac(kd.match_mac) if kd.match_mac else None
@@ -652,6 +726,9 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                 known_ip_to_group[kd.match_ip] = bn
 
             if kd.match_ip:
+                iface_type = "Tailscale" if kd.match_ip.startswith("100.") else "Local"
+                if iface_type == "Tailscale":
+                    combined[bn]["has_tailscale"] = True
                 combined[bn]["interfaces"].append(
                     {
                         "ip": kd.match_ip,
@@ -659,7 +736,7 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                         "ping": False,
                         "ports": {p: False for p in kd.ports},
                         "up": False,
-                        "type": "Tailscale" if kd.match_ip.startswith("100.") else "Local",
+                        "type": iface_type,
                         "original_name": kd.name,
                     }
                 )
@@ -696,6 +773,7 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                     "up": False,
                     "missing": False,
                     "is_host": (target_group == "Host machine" or is_host),
+                    "has_tailscale": False,
                 }
 
             grp = combined[target_group]
@@ -725,6 +803,8 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                 "conn_type": dev.get("conn_type", "Wired"),
                 "iface": dev.get("iface"),
             }
+            if iface_payload["type"] == "Tailscale":
+                grp["has_tailscale"] = True
             if iface:
                 iface.update(iface_payload)
             else:
@@ -737,6 +817,34 @@ async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str
                 final_known.append(c)
             elif c["interfaces"]:
                 final_discovered.append(c)
+
+        def merge_known_groups(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            merged: Dict[str, Dict[str, Any]] = {}
+            for g in groups:
+                key = get_base_name(g.get("name", "")).lower()
+                if key not in merged:
+                    merged[key] = g
+                    continue
+                target = merged[key]
+                target["up"] = target.get("up", False) or g.get("up", False)
+                target["missing"] = target.get("missing", False) and g.get("missing", False)
+                target["is_host"] = target.get("is_host", False) or g.get("is_host", False)
+                target["known"] = True
+                target["mac"] = target.get("mac") or g.get("mac")
+                target["notes"] = target.get("notes") or g.get("notes")
+                target["has_tailscale"] = target.get("has_tailscale", False) or g.get("has_tailscale", False)
+                iface_by_ip = {i["ip"]: i for i in target.get("interfaces", []) if i.get("ip")}
+                for iface in g.get("interfaces", []):
+                    ip = iface.get("ip")
+                    if not ip:
+                        continue
+                    if ip in iface_by_ip:
+                        continue
+                    iface_by_ip[ip] = iface
+                target["interfaces"] = list(iface_by_ip.values())
+            return list(merged.values())
+
+        final_known = merge_known_groups(final_known)
 
         res = {
             "networks": [str(n) for n in networks],

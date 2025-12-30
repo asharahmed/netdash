@@ -16,11 +16,13 @@ export function portsHtml(portsObj) {
   return `<div class="ports">${parts.join("")}</div>`;
 }
 
-export function deviceTable(devs) {
+export function deviceTable(devs, options = {}) {
   if (!devs || !devs.length) return `<div class="muted">None</div>`;
+  const showTailscale = options.showTailscale === true;
 
   let rows = devs.map(d => {
     const upBadge = d.up ? `<span class="badge bOk">Up</span>` : `<span class="badge bBad">Down</span>`;
+    const tsBadge = showTailscale && d.has_tailscale ? ` <span class="badge bWarn">TS</span>` : "";
     const name = d.name;
     const mac = d.mac ? `<div class="muted">MAC: <span class="mono">${d.mac}</span></div>` : "";
     const notes = d.notes ? `<div class="muted">${d.notes}</div>` : "";
@@ -48,7 +50,7 @@ export function deviceTable(devs) {
     return `
       <tr>
         <td>
-          <div style="font-weight:600;">${name}</div>
+          <div style="font-weight:600;">${name}${tsBadge}</div>
           ${mac}
           ${notes}
           ${missing}
