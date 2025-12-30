@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import ipaddress
 import json
 import platform
@@ -12,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import psutil
 
 from .config import cache_disabled, concurrency_from_env, neighbor_snapshot_disabled
-from .utils import _run_async, normalize_mac
+from .utils import _run, _run_async, normalize_mac
 
 
 @dataclass
@@ -79,6 +80,140 @@ def local_ipv4_networks() -> List[ipaddress.IPv4Network]:
             uniq.append(n)
             seen.add(str(n))
     return uniq
+
+
+def _default_gateway_ip() -> Optional[str]:
+    system = platform.system().lower()
+    if "darwin" in system:
+        rc, out, err = _run(["route", "-n", "get", "default"], timeout=2)
+        if rc == 0:
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("gateway:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return parts[1]
+        elif err:
+            print(f"DEBUG: route get default failed (rc={rc}): {err.strip()}")
+    elif "linux" in system:
+        rc, out, err = _run(["ip", "route", "show", "default"], timeout=2)
+        if rc == 0:
+            for line in out.splitlines():
+                m = re.search(r"\bdefault via (\S+)", line)
+                if m:
+                    return m.group(1)
+        elif err:
+            print(f"DEBUG: ip route default failed (rc={rc}): {err.strip()}")
+    return None
+
+
+def _gateway_mac(gateway_ip: str) -> Optional[str]:
+    if not gateway_ip:
+        return None
+    system = platform.system().lower()
+    if "windows" in system:
+        rc, out, _ = _run(["arp", "-a", gateway_ip], timeout=2)
+        if rc == 0:
+            m = re.search(rf"{re.escape(gateway_ip)}\s+([0-9a-fA-F\-]{{17}})", out)
+            if m:
+                return normalize_mac(m.group(1))
+        return None
+    rc, out, _ = _run(["arp", "-n", gateway_ip], timeout=2)
+    if rc == 0:
+        m = re.search(r"([0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5})", out)
+        if m:
+            return normalize_mac(m.group(1))
+    return None
+
+
+def _wifi_identity() -> Optional[str]:
+    system = platform.system().lower()
+    if "darwin" in system:
+        airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport"
+        rc, out, _ = _run([airport, "-I"], timeout=2)
+        if rc == 0:
+            ssid = None
+            bssid = None
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("SSID:"):
+                    ssid = line.split(":", 1)[1].strip()
+                elif line.startswith("BSSID:"):
+                    bssid = line.split(":", 1)[1].strip()
+            if ssid and bssid:
+                return f"{ssid}|{bssid}"
+            if ssid:
+                return ssid
+    elif "linux" in system:
+        rc, out, _ = _run(["iwgetid", "-r"], timeout=2)
+        if rc == 0 and out.strip():
+            return out.strip()
+        rc, out, _ = _run(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"], timeout=2)
+        if rc == 0:
+            for line in out.splitlines():
+                if line.startswith("yes:"):
+                    return line.split(":", 1)[1].strip()
+    elif "windows" in system:
+        rc, out, _ = _run(["netsh", "wlan", "show", "interfaces"], timeout=2)
+        if rc == 0:
+            ssid = None
+            bssid = None
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("SSID") and "BSSID" not in line:
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        ssid = parts[1].strip()
+                elif line.startswith("BSSID"):
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        bssid = parts[1].strip()
+            if ssid and bssid:
+                return f"{ssid}|{bssid}"
+            if ssid:
+                return ssid
+    return None
+
+
+def _network_fingerprint() -> str:
+    nets = sorted(str(n) for n in local_ipv4_networks())
+    addrs: List[str] = []
+    try:
+        for iface, addrs_list in psutil.net_if_addrs().items():
+            for addr in addrs_list:
+                if addr.family == socket.AF_INET and addr.address:
+                    if addr.address.startswith("127."):
+                        continue
+                    mask = addr.netmask or ""
+                    addrs.append(f"{iface}:{addr.address}/{mask}")
+    except Exception:
+        pass
+    gateway_ip = _default_gateway_ip() or ""
+    gateway_mac = _gateway_mac(gateway_ip) or ""
+    wifi_id = _wifi_identity() or ""
+    payload = {
+        "nets": nets,
+        "addrs": sorted(addrs),
+        "gateway": gateway_ip,
+        "gateway_mac": gateway_mac,
+        "wifi": wifi_id,
+    }
+    raw = json.dumps(payload, sort_keys=True)
+    return hashlib.sha1(raw.encode()).hexdigest()
+
+
+def _is_valid_host_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if addr.version != 4:
+        return False
+    if addr.is_multicast or addr.is_loopback or addr.is_unspecified or addr.is_link_local or addr.is_reserved:
+        return False
+    if ip in ("0.0.0.0", "255.255.255.255"):
+        return False
+    return addr.is_private or addr.is_global
 
 
 async def ping(host: str, timeout_ms: int = 900) -> bool:
@@ -237,14 +372,32 @@ _last_disc_result: Dict[str, Any] = {}
 _last_disc_time: float = 0
 _last_neighbors_snapshot: List[Dict[str, Any]] = []
 _last_neighbors_ts: float = 0.0
+_last_network_fingerprint: str = ""
+_last_neighbors_fingerprint: str = ""
 
 
-async def discover(cfg: Dict[str, Any]) -> Dict[str, Any]:
+async def discover(cfg: Dict[str, Any], force_refresh: bool = False) -> Dict[str, Any]:
     global _last_disc_result, _last_disc_time, _last_neighbors_snapshot, _last_neighbors_ts
+    global _last_network_fingerprint, _last_neighbors_fingerprint
     async with _discovery_lock:
         started_at = time.time()
         now = time.time()
-        if not cache_disabled() and _last_disc_result and (now - _last_disc_time < 60):
+        network_fp = _network_fingerprint()
+        if _last_network_fingerprint and network_fp != _last_network_fingerprint:
+            print("Network fingerprint changed; clearing discovery cache")
+            _last_disc_result = {}
+            _last_disc_time = 0
+            _last_neighbors_snapshot = []
+            _last_neighbors_ts = 0.0
+            _last_neighbors_fingerprint = ""
+
+        if (
+            not force_refresh
+            and not cache_disabled()
+            and _last_disc_result
+            and (now - _last_disc_time < 60)
+            and network_fp == _last_network_fingerprint
+        ):
             up_k = sum(1 for d in _last_disc_result.get("known_devices", []) if d.get("up"))
             up_d = sum(1 for d in _last_disc_result.get("discovered_devices", []) if d.get("up"))
             print(f"Returning cached discovery result (Up: {up_k} known, {up_d} disc)")
@@ -260,13 +413,14 @@ async def discover(cfg: Dict[str, Any]) -> Dict[str, Any]:
         networks = local_ipv4_networks()
 
         neighbors = await get_neighbors()
-        snapshot_allowed = not neighbor_snapshot_disabled()
+        snapshot_allowed = not neighbor_snapshot_disabled() and not force_refresh
         neighbor_source = "fresh"
         if neighbors:
             if snapshot_allowed:
                 _last_neighbors_snapshot = copy.deepcopy(neighbors)
                 _last_neighbors_ts = now
-        elif not neighbors:
+                _last_neighbors_fingerprint = network_fp
+        else:
             # Nudge ARP/neighbor cache by pinging likely seeds (gateways + known IPs), then retry once.
             seeds = set()
             for net in networks:
@@ -291,36 +445,35 @@ async def discover(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 if neighbors:
                     neighbor_source = "seed-repopulated"
                     print(f"Neighbor repopulated after seed pings ({len(neighbors)} entries)")
-            if not neighbors and snapshot_allowed and _last_neighbors_snapshot and (now - _last_neighbors_ts < 120):
+            if (
+                not neighbors
+                and snapshot_allowed
+                and _last_neighbors_snapshot
+                and (now - _last_neighbors_ts < 120)
+                and _last_neighbors_fingerprint == network_fp
+            ):
                 print("Neighbor scan returned empty; reusing last known snapshot")
                 neighbors = copy.deepcopy(_last_neighbors_snapshot)
                 neighbor_source = "snapshot"
             elif not neighbors:
                 print("Neighbor scan returned empty" + (" and snapshot reuse disabled" if not snapshot_allowed else " and no snapshot available"))
                 neighbor_source = "empty"
-        elif snapshot_allowed and _last_neighbors_snapshot and (now - _last_neighbors_ts < 120):
-            print("Neighbor scan returned empty; reusing last known snapshot")
-            neighbors = copy.deepcopy(_last_neighbors_snapshot)
-            neighbor_source = "snapshot"
-        else:
-            print("Neighbor scan returned empty" + (" and snapshot reuse disabled" if not snapshot_allowed else " and no snapshot available"))
-            neighbor_source = "empty"
-
         candidate_ips = set()
         mac_by_ip: Dict[str, str] = {}
         iface_by_ip: Dict[str, str] = {}
         for n in neighbors:
             ip = n.get("ip")
+            if not ip or not _is_valid_host_ip(ip):
+                continue
             mac = n.get("mac")
             iface = n.get("iface")
             state = n.get("state", "").upper()
-            if ip:
-                if state not in ("FAILED", "INCOMPLETE"):
-                    candidate_ips.add(ip)
-                if mac:
-                    mac_by_ip[ip] = mac
-                if iface:
-                    iface_by_ip[ip] = iface
+            if state not in ("FAILED", "INCOMPLETE"):
+                candidate_ips.add(ip)
+            if mac:
+                mac_by_ip[ip] = mac
+            if iface:
+                iface_by_ip[ip] = iface
 
         networks = local_ipv4_networks()
 
@@ -361,7 +514,7 @@ async def discover(cfg: Dict[str, Any]) -> Dict[str, Any]:
             refreshed_neighbors = await get_neighbors()
             for n in refreshed_neighbors:
                 ip = n.get("ip")
-                if not ip:
+                if not ip or not _is_valid_host_ip(ip):
                     continue
                 state = (n.get("state", "") or "").upper()
                 if state in ("FAILED", "INCOMPLETE"):
@@ -604,4 +757,5 @@ async def discover(cfg: Dict[str, Any]) -> Dict[str, Any]:
         if not cache_disabled():
             _last_disc_result = res
             _last_disc_time = time.time()
+            _last_network_fingerprint = network_fp
         return res

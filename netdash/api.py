@@ -27,15 +27,16 @@ async def health() -> Dict[str, Any]:
 
 
 @app.get("/api/status")
-async def api_status() -> JSONResponse:
+async def api_status(request: Request) -> JSONResponse:
     now = __import__("time").time()
     cfg = load_config()
     test_url = (cfg.get("nextdns", {}) or {}).get("test_url", "https://test.nextdns.io")
     ts_cfg = cfg.get("tailscale", {}) or {}
     ts_exe = ts_cfg.get("exe", None)
+    force_refresh = request.query_params.get("fresh", "").lower() in ("1", "true", "yes", "on")
 
     results = await __import__("asyncio").gather(
-        discover(cfg),
+        discover(cfg, force_refresh=force_refresh),
         __import__("asyncio").to_thread(nextdns_status, test_url),
         tailscale_status(ts_exe),
     )
@@ -48,6 +49,7 @@ async def api_status() -> JSONResponse:
         "meta": {
             "cache_enabled": not cache_disabled(),
             "neighbor_snapshot_enabled": not neighbor_snapshot_disabled(),
+            "cache_forced": force_refresh,
         },
         "host": {"os": __import__("platform").platform(), "hostname": __import__("socket").gethostname()},
     }

@@ -58,11 +58,11 @@ function toggleLoading(show) {
   }
 }
 
-async function refresh() {
-  const showLoading = firstLoad;
+async function refresh(options = {}) {
+  const showLoading = firstLoad || options.force;
   if (showLoading) toggleLoading(true);
   try {
-    const data = await fetchStatus();
+    const data = await fetchStatus({ force: options.force });
     lastGoodTs = Date.now();
 
     document.getElementById('hostLine').textContent = `Host: ${data.host?.hostname || "unknown"} • ${data.host?.os || "unknown"}`;
@@ -75,7 +75,9 @@ async function refresh() {
     const meta = data.meta || {};
     const cacheOn = meta.cache_enabled !== false;
     const snapOn = meta.neighbor_snapshot_enabled !== false;
-    document.getElementById('cacheMeta').textContent = `Cache: ${cacheOn ? "On" : "Off"} • Snapshot: ${snapOn ? "On" : "Off"}`;
+    const forced = meta.cache_forced === true;
+    const cacheBits = `Cache: ${cacheOn ? "On" : "Off"}${forced ? " (forced)" : ""}`;
+    document.getElementById('cacheMeta').textContent = `${cacheBits} • Snapshot: ${snapOn ? "On" : "Off"}`;
     document.getElementById('dotCache').style.background = cacheOn ? "rgba(45,212,191,0.5)" : "rgba(251,113,133,0.5)";
 
     const nd = data.nextdns || {};
@@ -170,6 +172,7 @@ window.copyText = copyText;
 document.addEventListener("DOMContentLoaded", () => {
   initGraph('netGraph', document.getElementById('tooltip'));
   document.getElementById('btnRefresh').addEventListener('click', () => refresh());
+  document.getElementById('btnForceRefresh').addEventListener('click', () => refresh({ force: true }));
   document.getElementById('btnResetView').addEventListener('click', () => resetGraphView());
   refresh();
   setInterval(refresh, 30000);
