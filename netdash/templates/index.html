@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/netdash-logo.svg" />
   <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
 </head>
 <body>
   <div id="loadingOverlay">
@@ -66,6 +66,16 @@
           <div class="chipStat" id="statNeighbor">Neighbors: —</div>
           <a class="chipStat" id="statDownload" href="/api/status" style="text-decoration:none; color:inherit;" download="status.json">Download JSON</a>
         </div>
+      </div>
+
+      <div class="card span12" id="warningsCard" style="display: none; background: rgba(251,113,133,0.1); border-left: 3px solid rgba(251,113,133,0.8);">
+        <div class="cardHeader">
+          <div>
+            <p class="cardTitle" style="color: rgba(251,113,133,1);">Network Warnings</p>
+            <p class="cardSub">Issues detected that may affect discovery accuracy</p>
+          </div>
+        </div>
+        <div id="warningsList" class="muted" style="font-size:12px;"></div>
       </div>
 
       <div class="card span12" id="graphCard">
@@ -138,6 +148,6 @@
     </div>
   </div>
 
-  <script type="module" src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

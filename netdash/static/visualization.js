@@ -1,3 +1,14 @@
+// HTML escape helper to prevent XSS
+function escapeHtml(str) {
+  if (!str) return str;
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 class NetdashGraph {
   constructor(containerId, tooltipEl) {
     this.container = document.getElementById(containerId);
@@ -55,10 +66,10 @@ class NetdashGraph {
         const hit = this._hitNode(pos.x, pos.y);
         if (hit && this.tooltip) {
           this.tooltip.innerHTML = `
-            <strong>${hit.name}</strong><br/>
-            IPs: ${(hit.ips || []).join(", ") || "N/A"}<br/>
-            MAC: ${hit.mac || "N/A"}<br/>
-            Connection: ${hit.connType || "Wired"}
+            <strong>${escapeHtml(hit.name)}</strong><br/>
+            IPs: ${escapeHtml((hit.ips || []).join(", ")) || "N/A"}<br/>
+            MAC: ${escapeHtml(hit.mac) || "N/A"}<br/>
+            Connection: ${escapeHtml(hit.connType) || "Wired"}
           `;
           this.tooltip.style.display = "block";
           this.tooltip.style.left = (e.clientX + 10) + "px";
@@ -135,13 +146,14 @@ class NetdashGraph {
 
     addNode("internet", "Internet", "internet", { up: true, radius: 16 });
 
+    const gwIp = data.discovery?.meta?.gateway_ip || null;
     known.forEach((d, idx) => {
       addNode(d.name, d.name, d.is_host ? "host" : "known", {
         up: d.up,
         ips: d.interfaces.map(i => i.ip),
         mac: d.mac,
         connType: d.interfaces.find(i => i.conn_type === "Wireless") ? "Wireless" : "Wired",
-        isGateway: d.interfaces.some(i => i.ip === "10.0.0.1"),
+        isGateway: gwIp ? d.interfaces.some(i => i.ip === gwIp) : false,
         isHost: d.is_host
       });
     });
@@ -152,7 +164,7 @@ class NetdashGraph {
         ips: d.interfaces.map(i => i.ip),
         mac: d.mac,
         connType: d.interfaces.find(i => i.conn_type === "Wireless") ? "Wireless" : "Wired",
-        isGateway: d.interfaces.some(i => i.ip === "10.0.0.1"),
+        isGateway: gwIp ? d.interfaces.some(i => i.ip === gwIp) : false,
         isHost: d.is_host
       });
     });

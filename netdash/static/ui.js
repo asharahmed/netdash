@@ -19,18 +19,50 @@ export function portsHtml(portsObj) {
 export function deviceTable(devs, options = {}) {
   if (!devs || !devs.length) return `<div class="muted">None</div>`;
   const showTailscale = options.showTailscale === true;
+  const gatewayIp = options.gatewayIp || null;
+  const normalizeName = (name) => {
+    return (name || "")
+      .toLowerCase()
+      .replace(/\s*[\(\[].*?[\)\]]/g, "")
+      .replace(/[\s\-–—]*\b(tailscale|ts)\b[\s\-–—]*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
 
   let rows = devs.map(d => {
     const upBadge = d.up ? `<span class="badge bOk">Up</span>` : `<span class="badge bBad">Down</span>`;
     const tsBadge = showTailscale && d.has_tailscale ? ` <span class="badge bWarn">TS</span>` : "";
     const name = d.name;
+    const baseName = normalizeName(name);
     const mac = d.mac ? `<div class="muted">MAC: <span class="mono">${d.mac}</span></div>` : "";
     const notes = d.notes ? `<div class="muted">${d.notes}</div>` : "";
     const missing = d.missing ? `<div class="muted">Expected device not currently detected</div>` : "";
 
-    const interfacesHtml = (d.interfaces || []).map(i => {
+    // For known devices, show all interfaces; for discovered, only show active ones
+    const showAllInterfaces = options.showAll === true || d.known === true;
+    const interfaces = (d.interfaces || []).filter(i => {
+      if (showAllInterfaces) return true;
+      if (gatewayIp && i.ip === gatewayIp) return true;
+      return i.ping === true;
+    });
+    if (!interfaces.length && !d.known) return "";
+
+    const interfacesHtml = interfaces.map(i => {
       const pingBadge = i.ping ? `<span class="badge bOk">Ping</span>` : `<span class="badge bBad">Ping</span>`;
       const typeLabel = i.type === "Tailscale" ? `<span class="badge bWarn">TS</span>` : "";
+      const rawOriginal = (i.original_name || "").trim();
+      const normalizedOriginal = normalizeName(rawOriginal);
+      const rawLower = rawOriginal.toLowerCase();
+      const showOriginal =
+        rawOriginal &&
+        rawOriginal !== i.ip &&
+        normalizedOriginal &&
+        normalizedOriginal !== baseName &&
+        !rawLower.includes(baseName) &&
+        !/tailscale|\.ts\.net/i.test(rawOriginal);
+      const originalLine = showOriginal
+        ? `<div class="muted" style="font-size:10px;">${rawOriginal}</div>`
+        : "";
       return `
         <div class="row" style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.03);">
           <div style="flex: 1;">
@@ -39,7 +71,7 @@ export function deviceTable(devs, options = {}) {
               <img src="/static/icons/copy.svg" alt="" style="width:14px; height:14px; opacity:0.8;" />
               Copy IP
             </span>
-            <div class="muted" style="font-size:10px;">${i.original_name}</div>
+            ${originalLine}
           </div>
           <div style="width: 80px;">${pingBadge}</div>
           <div style="flex: 2;">${portsHtml(i.ports)}</div>
@@ -63,7 +95,8 @@ export function deviceTable(devs, options = {}) {
         </td>
       </tr>
     `;
-  }).join("");
+  }).filter(Boolean).join("");
+  if (!rows) return `<div class="muted">None</div>`;
 
   return `
     <table class="table">

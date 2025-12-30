@@ -62,7 +62,7 @@ async function refresh(options = {}) {
   const showLoading = firstLoad || options.force;
   if (showLoading) toggleLoading(true);
   try {
-    const data = await fetchStatus({ force: options.force });
+    const data = await fetchStatus({ force: options.force, timeoutMs: 60000 });
     lastGoodTs = Date.now();
 
     document.getElementById('hostLine').textContent = `Host: ${data.host?.hostname || "unknown"} • ${data.host?.os || "unknown"}`;
@@ -77,7 +77,8 @@ async function refresh(options = {}) {
     const snapOn = meta.neighbor_snapshot_enabled !== false;
     const forced = meta.cache_forced === true;
     const cacheBits = `Cache: ${cacheOn ? "On" : "Off"}${forced ? " (forced)" : ""}`;
-    document.getElementById('cacheMeta').textContent = `${cacheBits} • Snapshot: ${snapOn ? "On" : "Off"}`;
+    const stale = meta.discovery_stale ? " • Refreshing…" : "";
+    document.getElementById('cacheMeta').textContent = `${cacheBits}${stale} • Snapshot: ${snapOn ? "On" : "Off"}`;
     document.getElementById('dotCache').style.background = cacheOn ? "rgba(45,212,191,0.5)" : "rgba(251,113,133,0.5)";
 
     const nd = data.nextdns || {};
@@ -121,6 +122,22 @@ async function refresh(options = {}) {
       `Neighbors: ${disc.neighbors_count ?? "?"}`
     ].filter(Boolean);
     document.getElementById('discMeta').textContent = metaParts.join(" • ");
+
+    // Display warnings (only show actionable issues)
+    const warnings = [];
+    if (dMeta.transparent_proxy_detected) {
+      warnings.push("Transparent proxy detected - VPN or captive portal may be intercepting traffic. Some devices may not be discovered.");
+    }
+    // Note: subnet_mismatches not shown as warning - devices on other networks show as "missing" which is sufficient
+
+    const warningsCard = document.getElementById('warningsCard');
+    const warningsList = document.getElementById('warningsList');
+    if (warnings.length > 0) {
+      warningsCard.style.display = 'block';
+      warningsList.innerHTML = warnings.map(w => `<div style="margin: 4px 0;">⚠ ${w}</div>`).join("");
+    } else {
+      warningsCard.style.display = 'none';
+    }
     const statParts = [
       dMeta.neighbor_source ? `Neighbors from: ${dMeta.neighbor_source}` : null,
       (dMeta.ping_hits ?? null) !== null ? `Ping hits: ${dMeta.ping_hits}` : null,
@@ -144,8 +161,9 @@ async function refresh(options = {}) {
 
     document.getElementById('knownCount').textContent = `${known.length} tracked`;
     const showTsIndicator = ts.installed === true || ts.running_local === true;
-    document.getElementById('knownDevices').innerHTML = deviceTable(known, { showTailscale: showTsIndicator });
-    document.getElementById('discoveredDevices').innerHTML = deviceTable(discovered);
+    const gatewayIp = dMeta.gateway_ip || null;
+    document.getElementById('knownDevices').innerHTML = deviceTable(known, { showTailscale: showTsIndicator, gatewayIp });
+    document.getElementById('discoveredDevices').innerHTML = deviceTable(discovered, { gatewayIp });
 
     document.getElementById('statKnown').textContent = `Known: ${known.length}`;
     document.getElementById('statKnownUp').textContent = `Known up: ${knownUp}`;
